@@ -1,0 +1,44 @@
+{
+    "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+    "name": "com.erseni/vault-ask",
+    "title": "vault-ask",
+    "description": "Request and send secrets for AI agents, end-to-end encrypted and never shown in the chat.",
+    "websiteUrl": "https://vault.erseni.com/ai-agents",
+    "repository": {
+        "url": "https://github.com/Erseni/secrets-component",
+        "source": "github",
+        "subfolder": "cli"
+    },
+    "version": "0.2.1",
+    "packages": [
+        {
+            "registryType": "npm",
+            "identifier": "@erseni/vault-ask",
+            "version": "0.2.1",
+            "runtimeHint": "npx",
+            "transport": {
+                "type": "stdio"
+            },
+            "packageArguments": [
+                {
+                    "type": "positional",
+                    "value": "mcp"
+                }
+            ],
+            "environmentVariables": [
+                {
+                    "name": "VAULT_ASK_API_KEY",
+                    "description": "API key from your Erseni Vault account. Without it, each request solves a proof of work.",
+                    "isRequired": false,
+                    "isSecret": true
+                },
+                {
+                    "name": "VAULT_ASK_SERVER",
+                    "description": "Vault server URL",
+                    "isRequired": false,
+                    "default": "https://vault.erseni.com"
+                }
+            ]
+        }
+    ]
+}

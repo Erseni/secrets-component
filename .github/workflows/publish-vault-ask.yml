@@ -1,0 +1,87 @@
+name: Publish vault-ask
+
+on:
+  push:
+    branches:
+      - main
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  MCP_PUBLISHER_VERSION: '1.8.1'
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: cli
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+          package-manager-cache: false
+      - name: Check whether this version is already on npm and in the MCP Registry
+        id: check
+        run: |
+          name=$(node -p "require('./package.json').name")
+          version=$(node -p "require('./package.json').version")
+          if npm view "${name}@${version}" version > /dev/null 2> npm-view.err; then
+            echo "${name}@${version} is already on npm"
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          elif grep -q E404 npm-view.err; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            cat npm-view.err
+            exit 1
+          fi
+          server=$(node -p "encodeURIComponent(require('./server.json').name)")
+          status=$(curl -sS -o /dev/null -w '%{http_code}' "https://registry.modelcontextprotocol.io/v0/servers/${server}/versions/${version}")
+          if [ "$status" = "200" ]; then
+            echo "${version} is already in the MCP Registry"
+            echo "registry=false" >> "$GITHUB_OUTPUT"
+          elif [ "$status" = "404" ]; then
+            echo "registry=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "MCP Registry answered ${status}"
+            exit 1
+          fi
+      - run: npm test
+        if: steps.check.outputs.publish == 'true'
+      - run: npm publish --access public
+        if: steps.check.outputs.publish == 'true'
+      - name: Wait until npm serves this version
+        if: steps.check.outputs.registry == 'true'
+        run: |
+          name=$(node -p "require('./package.json').name")
+          version=$(node -p "require('./package.json').version")
+          for attempt in $(seq 1 40); do
+            if npm view "${name}@${version}" version --prefer-online > /dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 15
+          done
+          echo "${name}@${version} is still not served by npm"
+          exit 1
+      - name: Install mcp-publisher
+        if: steps.check.outputs.registry == 'true'
+        working-directory: ${{ runner.temp }}
+        run: |
+          archive=mcp-publisher_linux_amd64.tar.gz
+          base="https://github.com/modelcontextprotocol/registry/releases/download/v${MCP_PUBLISHER_VERSION}"
+          curl -sSfL -o "$archive" "${base}/${archive}"
+          curl -sSfL -o checksums.txt "${base}/registry_${MCP_PUBLISHER_VERSION}_checksums.txt"
+          grep " ${archive}\$" checksums.txt | sha256sum -c -
+          tar -xzf "$archive" mcp-publisher
+      - name: Publish to the MCP Registry
+        if: steps.check.outputs.registry == 'true'
+        env:
+          MCP_REGISTRY_PRIVATE_KEY: ${{ secrets.MCP_REGISTRY_PRIVATE_KEY }}
+        run: |
+          : "${MCP_REGISTRY_PRIVATE_KEY:?The repository secret MCP_REGISTRY_PRIVATE_KEY is missing}"
+          "${RUNNER_TEMP}/mcp-publisher" login dns --domain erseni.com --private-key "$MCP_REGISTRY_PRIVATE_KEY"
+          "${RUNNER_TEMP}/mcp-publisher" publish server.json

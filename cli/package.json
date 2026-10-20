@@ -1,0 +1,41 @@
+{
+    "name": "@erseni/vault-ask",
+    "version": "0.2.1",
+    "mcpName": "com.erseni/vault-ask",
+    "description": "Request and send secrets for AI agents through Erseni Vault: end-to-end encrypted, bound to one command, masked in every output, never printed.",
+    "license": "AGPL-3.0-or-later",
+    "type": "module",
+    "bin": {
+        "vault-ask": "bin/vault-ask",
+        "vault-ask-mcp": "bin/vault-ask-mcp.js",
+        "vault-ask-guard": "bin/vault-ask-guard.js"
+    },
+    "files": [
+        "bin/",
+        "lib/",
+        "README.md"
+    ],
+    "engines": {
+        "node": ">=20"
+    },
+    "scripts": {
+        "test": "node --test test/*.test.js"
+    },
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/Erseni/secrets-component.git",
+        "directory": "cli"
+    },
+    "homepage": "https://vault.erseni.com/ai-agents",
+    "keywords": [
+        "secrets",
+        "ai-agents",
+        "mcp",
+        "claude-code",
+        "end-to-end-encryption",
+        "zero-knowledge"
+    ],
+    "publishConfig": {
+        "access": "public"
+    }
+}
