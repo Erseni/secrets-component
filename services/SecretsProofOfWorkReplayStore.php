@@ -20,6 +20,8 @@ use Throwable;
 #[Service]
 class SecretsProofOfWorkReplayStore implements ProofOfWorkReplayStore
 {
+    private const string TABLE = 'secrets.pow_used';
+
     /** @var PostgresConnector<PowChallengeUse> */
     #[Inject(overwriteParams: [new Param('name', 'powChallengeUse'), new Param('class', PowChallengeUse::class)])]
     protected PostgresConnector $powChallengeUseConnector;
@@ -36,20 +38,22 @@ class SecretsProofOfWorkReplayStore implements ProofOfWorkReplayStore
         $connection = $this->powChallengeUseConnector->getEntityManager()->getConnection();
 
         try {
-            $connection->executeStatement(
-                'DELETE FROM secrets.pow_used WHERE expires_at < :now',
-                ['now' => $now->format('Y-m-d H:i:s')],
-            );
+            $connection->createQueryBuilder()
+                ->delete(self::TABLE)
+                ->where('expires_at < :now')
+                ->setParameter('now', $now->format('Y-m-d H:i:s'))
+                ->executeStatement();
 
-            $connection->executeStatement(
-                'INSERT INTO secrets.pow_used (challenge, expires_at, created_at, modified_at) '
-                . 'VALUES (:challenge, :expiresAt, :now, :now)',
-                [
-                    'challenge' => $challenge,
-                    'expiresAt' => $expiresAt->format('Y-m-d H:i:s'),
-                    'now' => $now->format('Y-m-d H:i:s'),
-                ],
-            );
+            $connection->createQueryBuilder()
+                ->insert(self::TABLE)
+                ->setValue('challenge', ':challenge')
+                ->setValue('expires_at', ':expiresAt')
+                ->setValue('created_at', ':now')
+                ->setValue('modified_at', ':now')
+                ->setParameter('challenge', $challenge)
+                ->setParameter('expiresAt', $expiresAt->format('Y-m-d H:i:s'))
+                ->setParameter('now', $now->format('Y-m-d H:i:s'))
+                ->executeStatement();
 
             return true;
         } catch (UniqueConstraintViolationException) {

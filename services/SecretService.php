@@ -4,12 +4,14 @@ declare(strict_types=1);
 
 namespace esn\components\secrets\services;
 
+use Closure;
 use Doctrine\DBAL\Connection;
 use DateInterval;
 use DateTime;
 use DateTimeZone;
 use Doctrine\DBAL\ArrayParameterType;
 use Doctrine\DBAL\ParameterType;
+use Doctrine\DBAL\Query\QueryBuilder;
 use esn\components\secrets\Base64Url;
 use esn\components\secrets\entities\Secret;
 use esn\components\secrets\entities\SecretRequest;
@@ -20,6 +22,7 @@ use esn\components\sse\service\SseService;
 use esn\core\cache\Cache;
 use esn\core\database\CacheConnector;
 use esn\core\database\PostgresConnector;
+use esn\core\database\PostgresDml;
 use esn\core\Functions;
 use InvalidArgumentException;
 use rg\injektor\attributes\Inject;
@@ -174,12 +177,7 @@ class SecretService
     {
         $connection = $this->secretConnector->getEntityManager()->getConnection();
 
-        $row = $connection->executeQuery(
-            'DELETE FROM secrets.secrets '
-            . 'WHERE token = :token AND expires_at > :now '
-            . 'RETURNING ciphertext, nonce, attachment_ciphertext, attachment_nonce, attachment_meta, expires_at, views_left',
-            ['token' => $token, 'now' => $this->nowUtcParameter()],
-        )->fetchAssociative();
+        $row = SecretDeleteReturning::execute($connection, $token, $this->nowUtcParameter());
 
         if ($row === false) {
             Functions::logInfo('secrets.retrieve.miss', ['reason' => 'token_miss_or_expired']);
@@ -187,15 +185,7 @@ class SecretService
             return null;
         }
 
-        $snapshot = new Secret();
-        $snapshot->setToken($token);
-        $snapshot->setCiphertext($this->readBlobField($row['ciphertext']));
-        $snapshot->setNonce($this->readBlobField($row['nonce']));
-        $snapshot->setAttachmentCiphertext($this->readNullableBlobField($row['attachment_ciphertext'] ?? null));
-        $snapshot->setAttachmentNonce($this->readNullableBlobField($row['attachment_nonce'] ?? null));
-        $snapshot->setAttachmentMeta($this->readNullableBlobField($row['attachment_meta'] ?? null));
-        $snapshot->setExpiresAt(new DateTime((string) $row['expires_at'], new DateTimeZone('UTC')));
-        $snapshot->setViewsLeft((int) $row['views_left']);
+        $snapshot = $this->secretSnapshotFromRow($token, $row);
 
         $this->markStatusRetrieved(SecretStatus::KIND_SECRET, $token);
 
@@ -271,33 +261,27 @@ class SecretService
 
         $connection = $this->secretRequestConnector->getEntityManager()->getConnection();
 
-        $affectedRows = $connection->executeStatement(
-            'UPDATE secrets.secret_requests '
-            . 'SET filler_pub = :fillerPub, ciphertext = :ciphertext, nonce = :nonce, '
-            . 'attachment_ciphertext = :attachmentCiphertext, attachment_nonce = :attachmentNonce, '
-            . 'attachment_meta = :attachmentMeta, modified_at = :now '
-            . 'WHERE token = :token AND filler_pub IS NULL AND expires_at > :now',
-            [
-                'fillerPub' => $fillerPub,
-                'ciphertext' => $ciphertext,
-                'nonce' => $nonce,
-                'attachmentCiphertext' => $hasAttachment ? $attachmentCiphertext : null,
-                'attachmentNonce' => $hasAttachment ? $attachmentNonce : null,
-                'attachmentMeta' => $hasAttachment ? $attachmentMeta : null,
-                'token' => $token,
-                'now' => $this->nowUtcParameter(),
-            ],
-            [
-                'fillerPub' => ParameterType::LARGE_OBJECT,
-                'ciphertext' => ParameterType::LARGE_OBJECT,
-                'nonce' => ParameterType::LARGE_OBJECT,
-                'attachmentCiphertext' => ParameterType::LARGE_OBJECT,
-                'attachmentNonce' => ParameterType::LARGE_OBJECT,
-                'attachmentMeta' => ParameterType::LARGE_OBJECT,
-                'token' => ParameterType::STRING,
-                'now' => ParameterType::STRING,
-            ],
-        );
+        $affectedRows = $connection->createQueryBuilder()
+            ->update('secrets.secret_requests')
+            ->set('filler_pub', ':fillerPub')
+            ->set('ciphertext', ':ciphertext')
+            ->set('nonce', ':nonce')
+            ->set('attachment_ciphertext', ':attachmentCiphertext')
+            ->set('attachment_nonce', ':attachmentNonce')
+            ->set('attachment_meta', ':attachmentMeta')
+            ->set('modified_at', ':now')
+            ->where('token = :token')
+            ->andWhere('filler_pub IS NULL')
+            ->andWhere('expires_at > :now')
+            ->setParameter('fillerPub', $fillerPub, ParameterType::LARGE_OBJECT)
+            ->setParameter('ciphertext', $ciphertext, ParameterType::LARGE_OBJECT)
+            ->setParameter('nonce', $nonce, ParameterType::LARGE_OBJECT)
+            ->setParameter('attachmentCiphertext', $hasAttachment ? $attachmentCiphertext : null, ParameterType::LARGE_OBJECT)
+            ->setParameter('attachmentNonce', $hasAttachment ? $attachmentNonce : null, ParameterType::LARGE_OBJECT)
+            ->setParameter('attachmentMeta', $hasAttachment ? $attachmentMeta : null, ParameterType::LARGE_OBJECT)
+            ->setParameter('token', $token)
+            ->setParameter('now', $this->nowUtcParameter())
+            ->executeStatement();
 
         if ($affectedRows === 0) {
             Functions::logInfo('secrets.fulfill.miss', ['reason' => 'token_miss_or_expired_or_already_fulfilled']);
@@ -314,12 +298,17 @@ class SecretService
     {
         $connection = $this->secretRequestConnector->getEntityManager()->getConnection();
 
-        $row = $connection->executeQuery(
-            'DELETE FROM secrets.secret_requests '
-            . 'WHERE token = :token AND filler_pub IS NOT NULL AND expires_at > :now '
-            . 'RETURNING requester_pub, filler_pub, ciphertext, nonce, '
-            . 'attachment_ciphertext, attachment_nonce, attachment_meta, expires_at',
-            ['token' => $token, 'now' => $this->nowUtcParameter()],
+        $delete = $connection->createQueryBuilder()
+            ->delete('secrets.secret_requests')
+            ->where('token = :token')
+            ->andWhere('filler_pub IS NOT NULL')
+            ->andWhere('expires_at > :now')
+            ->setParameter('token', $token)
+            ->setParameter('now', $this->nowUtcParameter());
+        $row = PostgresDml::executeReturning(
+            $connection,
+            $delete,
+            ['requester_pub', 'filler_pub', 'ciphertext', 'nonce', 'attachment_ciphertext', 'attachment_nonce', 'attachment_meta', 'expires_at'],
         )->fetchAssociative();
 
         if ($row === false) {
@@ -328,6 +317,36 @@ class SecretService
             return null;
         }
 
+        $snapshot = $this->requestSnapshotFromRow($token, $row);
+
+        $this->markStatusRetrieved(SecretStatus::KIND_REQUEST, $token);
+
+        return $snapshot;
+    }
+
+    /**
+     * @param  array<string, mixed>  $row
+     */
+    public function secretSnapshotFromRow(string $token, array $row): Secret
+    {
+        $snapshot = new Secret();
+        $snapshot->setToken($token);
+        $snapshot->setCiphertext($this->readBlobField($row['ciphertext']));
+        $snapshot->setNonce($this->readBlobField($row['nonce']));
+        $snapshot->setAttachmentCiphertext($this->readNullableBlobField($row['attachment_ciphertext'] ?? null));
+        $snapshot->setAttachmentNonce($this->readNullableBlobField($row['attachment_nonce'] ?? null));
+        $snapshot->setAttachmentMeta($this->readNullableBlobField($row['attachment_meta'] ?? null));
+        $snapshot->setExpiresAt(new DateTime((string) $row['expires_at'], new DateTimeZone('UTC')));
+        $snapshot->setViewsLeft((int) $row['views_left']);
+
+        return $snapshot;
+    }
+
+    /**
+     * @param  array<string, mixed>  $row
+     */
+    public function requestSnapshotFromRow(string $token, array $row): SecretRequest
+    {
         $snapshot = new SecretRequest();
         $snapshot->setToken($token);
         $snapshot->setRequesterPub($this->readBlobField($row['requester_pub']));
@@ -338,8 +357,6 @@ class SecretService
         $snapshot->setAttachmentNonce($this->readNullableBlobField($row['attachment_nonce'] ?? null));
         $snapshot->setAttachmentMeta($this->readNullableBlobField($row['attachment_meta'] ?? null));
         $snapshot->setExpiresAt(new DateTime((string) $row['expires_at'], new DateTimeZone('UTC')));
-
-        $this->markStatusRetrieved(SecretStatus::KIND_REQUEST, $token);
 
         return $snapshot;
     }
@@ -376,18 +393,38 @@ class SecretService
      * @param  array<string, mixed>  $parameters
      * @return list<string>
      */
-    private function deleteExpiredReturningTokens(Connection $connection, string $table, string $condition, array $parameters): array
+    protected function deleteExpiredReturningTokens(Connection $connection, string $table, string $condition, array $parameters): array
+    {
+        return $this->drainReturningTokens($table, function () use ($connection, $table, $condition, $parameters): array {
+            /** @var list<string> */
+            return PostgresDml::executeReturning(
+                $connection,
+                $this->buildBatchDelete($connection, $table, $condition, $parameters),
+                ['token'],
+            )->fetchFirstColumn();
+        });
+    }
+
+    /**
+     * @param  array<string, mixed>  $parameters
+     */
+    protected function deleteExpired(Connection $connection, string $table, array $parameters): int
+    {
+        return $this->drainCount(
+            $table,
+            fn(): int => (int) $this->buildBatchDelete($connection, $table, 'expires_at < :now', $parameters)->executeStatement(),
+        );
+    }
+
+    /**
+     * @param  Closure(): list<string>  $deleteBatch
+     * @return list<string>
+     */
+    public function drainReturningTokens(string $table, Closure $deleteBatch): array
     {
         $tokens = [];
         for ($batchIndex = 0; $batchIndex < self::CLEANUP_MAX_BATCHES; $batchIndex++) {
-            /** @var list<string> $batch */
-            $batch = $connection->executeQuery(
-                'DELETE FROM ' . $table . ' WHERE id IN ('
-                . 'SELECT id FROM ' . $table . ' WHERE ' . $condition . ' LIMIT :limit'
-                . ') RETURNING token',
-                ['limit' => self::CLEANUP_BATCH_SIZE, ...$parameters],
-            )->fetchFirstColumn();
-
+            $batch = $deleteBatch();
             foreach ($batch as $token) {
                 $tokens[] = $token;
             }
@@ -403,18 +440,13 @@ class SecretService
     }
 
     /**
-     * @param  array<string, mixed>  $parameters
+     * @param  Closure(): int  $deleteBatch
      */
-    private function deleteExpired(Connection $connection, string $table, array $parameters): int
+    public function drainCount(string $table, Closure $deleteBatch): int
     {
         $deleted = 0;
         for ($batchIndex = 0; $batchIndex < self::CLEANUP_MAX_BATCHES; $batchIndex++) {
-            $batch = (int) $connection->executeStatement(
-                'DELETE FROM ' . $table . ' WHERE id IN ('
-                . 'SELECT id FROM ' . $table . ' WHERE expires_at < :now LIMIT :limit'
-                . ')',
-                ['limit' => self::CLEANUP_BATCH_SIZE, ...$parameters],
-            );
+            $batch = $deleteBatch();
             $deleted += $batch;
 
             if ($batch < self::CLEANUP_BATCH_SIZE) {
@@ -425,6 +457,23 @@ class SecretService
         $this->reportCleanupBacklog($table, $deleted);
 
         return $deleted;
+    }
+
+    /**
+     * @param  array<string, mixed>  $parameters
+     */
+    private function buildBatchDelete(Connection $connection, string $table, string $condition, array $parameters): QueryBuilder
+    {
+        $batch = $connection->createQueryBuilder()
+            ->select('id')
+            ->from($table)
+            ->where($condition)
+            ->setMaxResults(self::CLEANUP_BATCH_SIZE);
+
+        return $connection->createQueryBuilder()
+            ->delete($table)
+            ->where('id IN (' . $batch->getSQL() . ')')
+            ->setParameters($parameters);
     }
 
     private function reportCleanupBacklog(string $table, int $deleted): void
@@ -466,13 +515,13 @@ class SecretService
         $connection = $this->secretStatusConnector->getEntityManager()->getConnection();
 
         /** @var list<array{kind: string, token: string, created_at: mixed, expires_at: mixed, fulfilled_at: mixed, retrieved_at: mixed}> $rows */
-        $rows = $connection->executeQuery(
-            'SELECT kind, token, created_at, expires_at, fulfilled_at, retrieved_at '
-            . 'FROM secrets.secret_status '
-            . 'WHERE token IN (:tokens)',
-            ['tokens' => $tokens],
-            ['tokens' => ArrayParameterType::STRING],
-        )->fetchAllAssociative();
+        $rows = $connection->createQueryBuilder()
+            ->select('kind', 'token', 'created_at', 'expires_at', 'fulfilled_at', 'retrieved_at')
+            ->from('secrets.secret_status')
+            ->where('token IN (:tokens)')
+            ->setParameter('tokens', $tokens, ArrayParameterType::STRING)
+            ->executeQuery()
+            ->fetchAllAssociative();
 
         $statuses = [];
         foreach ($rows as $row) {
@@ -502,13 +551,16 @@ class SecretService
     {
         $connection = $this->secretStatusConnector->getEntityManager()->getConnection();
 
-        $row = $connection->executeQuery(
-            'SELECT created_at, expires_at, fulfilled_at, retrieved_at '
-            . 'FROM secrets.secret_status '
-            . 'WHERE kind = :kind AND token = :token '
-            . 'LIMIT 1',
-            ['kind' => $kind, 'token' => $token],
-        )->fetchAssociative();
+        $row = $connection->createQueryBuilder()
+            ->select('created_at', 'expires_at', 'fulfilled_at', 'retrieved_at')
+            ->from('secrets.secret_status')
+            ->where('kind = :kind')
+            ->andWhere('token = :token')
+            ->setParameter('kind', $kind)
+            ->setParameter('token', $token)
+            ->setMaxResults(1)
+            ->executeQuery()
+            ->fetchAssociative();
 
         if ($row === false) {
             return null;
@@ -569,12 +621,18 @@ class SecretService
     {
         try {
             $connection = $this->secretConnector->getEntityManager()->getConnection();
-            $connection->executeStatement(
-                'INSERT INTO secrets.secret_stats (metric, count, created_at, modified_at) '
-                . 'VALUES (:metric, 1, :now, :now) '
-                . 'ON CONFLICT (metric) DO UPDATE SET count = secret_stats.count + 1, modified_at = :now',
-                ['metric' => $metric, 'now' => $this->nowUtcParameter()],
-            );
+            $insert = $connection->createQueryBuilder()
+                ->insert('secrets.secret_stats')
+                ->setValue('metric', ':metric')
+                ->setValue('count', '1')
+                ->setValue('created_at', ':now')
+                ->setValue('modified_at', ':now')
+                ->setParameter('metric', $metric)
+                ->setParameter('now', $this->nowUtcParameter());
+            PostgresDml::upsert($connection, $insert, ['metric'], [
+                'count' => 'secret_stats.count + 1',
+                'modified_at' => 'EXCLUDED.modified_at',
+            ]);
             $this->statsCacheConnector->deleteByKey(self::STATUS_METRICS_CACHE_KEY);
         } catch (Throwable $e) {
             $this->secretLogger->logException($e);
@@ -585,12 +643,10 @@ class SecretService
     {
         try {
             $connection = $this->secretStatusConnector->getEntityManager()->getConnection();
-            $row = $connection->executeQuery(
-                'UPDATE secrets.secret_status '
-                . 'SET fulfilled_at = :now, modified_at = :now '
-                . 'WHERE kind = :kind AND token = :token AND fulfilled_at IS NULL '
-                . 'RETURNING fulfilled_at',
-                ['kind' => SecretStatus::KIND_REQUEST, 'token' => $token, 'now' => $this->nowUtcParameter()],
+            $row = PostgresDml::executeReturning(
+                $connection,
+                $this->buildStatusTransition($connection, SecretStatus::KIND_REQUEST, $token, 'fulfilled_at'),
+                ['fulfilled_at'],
             )->fetchAssociative();
 
             if ($row === false) {
@@ -608,12 +664,10 @@ class SecretService
     {
         try {
             $connection = $this->secretStatusConnector->getEntityManager()->getConnection();
-            $row = $connection->executeQuery(
-                'UPDATE secrets.secret_status '
-                . 'SET retrieved_at = :now, modified_at = :now '
-                . 'WHERE kind = :kind AND token = :token AND retrieved_at IS NULL '
-                . 'RETURNING retrieved_at',
-                ['kind' => $kind, 'token' => $token, 'now' => $this->nowUtcParameter()],
+            $row = PostgresDml::executeReturning(
+                $connection,
+                $this->buildStatusTransition($connection, $kind, $token, 'retrieved_at'),
+                ['retrieved_at'],
             )->fetchAssociative();
 
             if ($row === false) {
@@ -627,16 +681,37 @@ class SecretService
         }
     }
 
+    private function buildStatusTransition(Connection $connection, string $kind, string $token, string $column): QueryBuilder
+    {
+        return $connection->createQueryBuilder()
+            ->update('secrets.secret_status')
+            ->set($column, ':now')
+            ->set('modified_at', ':now')
+            ->where('kind = :kind')
+            ->andWhere('token = :token')
+            ->andWhere($column . ' IS NULL')
+            ->setParameter('kind', $kind)
+            ->setParameter('token', $token)
+            ->setParameter('now', $this->nowUtcParameter());
+    }
+
     public function publicChannelExists(string $kind, string $token): bool
     {
         try {
             $connection = $this->secretStatusConnector->getEntityManager()->getConnection();
-            $row = $connection->executeQuery(
-                'SELECT 1 FROM secrets.secret_status '
-                . 'WHERE kind = :kind AND token = :token AND expires_at > :now AND retrieved_at IS NULL '
-                . 'LIMIT 1',
-                ['kind' => $kind, 'token' => $token, 'now' => $this->nowUtcParameter()],
-            )->fetchOne();
+            $row = $connection->createQueryBuilder()
+                ->select('1')
+                ->from('secrets.secret_status')
+                ->where('kind = :kind')
+                ->andWhere('token = :token')
+                ->andWhere('expires_at > :now')
+                ->andWhere('retrieved_at IS NULL')
+                ->setParameter('kind', $kind)
+                ->setParameter('token', $token)
+                ->setParameter('now', $this->nowUtcParameter())
+                ->setMaxResults(1)
+                ->executeQuery()
+                ->fetchOne();
             return $row !== false;
         } catch (Throwable $e) {
             $this->secretLogger->logException($e);
@@ -705,14 +780,16 @@ class SecretService
     /**
      * @return array{lifetimeSecrets: int, lifetimeRequests: int}
      */
-    private function fetchStatusMetrics(): array
+    protected function fetchStatusMetrics(): array
     {
         $connection = $this->secretConnector->getEntityManager()->getConnection();
-        $rows = $connection->executeQuery(
-            'SELECT metric, count FROM secrets.secret_stats '
-            . 'WHERE metric IN (:m1, :m2)',
-            ['m1' => SecretStat::METRIC_SECRETS_SENT, 'm2' => SecretStat::METRIC_REQUESTS_CREATED],
-        )->fetchAllAssociative();
+        $rows = $connection->createQueryBuilder()
+            ->select('metric', 'count')
+            ->from('secrets.secret_stats')
+            ->where('metric IN (:metrics)')
+            ->setParameter('metrics', [SecretStat::METRIC_SECRETS_SENT, SecretStat::METRIC_REQUESTS_CREATED], ArrayParameterType::STRING)
+            ->executeQuery()
+            ->fetchAllAssociative();
 
         $counts = [];
         foreach ($rows as $row) {
