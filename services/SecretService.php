@@ -630,8 +630,8 @@ class SecretService
                 ->setParameter('metric', $metric)
                 ->setParameter('now', $this->nowUtcParameter());
             PostgresDml::upsert($connection, $insert, ['metric'], [
-                'count' => 'secret_stats.count + 1',
-                'modified_at' => 'EXCLUDED.modified_at',
+                'count' => PostgresDml::incrementExisting('secret_stats', 'count'),
+                'modified_at' => PostgresDml::excluded('modified_at'),
             ]);
             $this->statsCacheConnector->deleteByKey(self::STATUS_METRICS_CACHE_KEY);
         } catch (Throwable $e) {
