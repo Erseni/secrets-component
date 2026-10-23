@@ -1,5 +1,8 @@
 # secrets-component
 
+[![Listed on mcpservers.org](https://mcpservers.org/badge.svg)](https://mcpservers.org/servers/erseni/secrets-component)
+[![Vault Ask MCP server](https://mcprush.com/badge/vault-ask-mcp/card.svg)](https://mcprush.com/to/vault-ask-mcp?ref=badge)
+
 Zero-knowledge, one-time secret sharing. End-to-end encrypted in the browser. The server only ever stores ciphertext. Supports both **sending** and **requesting** secrets without requiring any account.
 
 Part of the [Erseni](https://erseni.com) open-source components.
