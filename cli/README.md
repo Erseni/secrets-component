@@ -31,7 +31,7 @@ Several names in one call give one page with several fields. There is deliberate
 | `--server <url>` | Vault host, default `$VAULT_ASK_SERVER` or `https://vault.erseni.com` |
 | `--ttl <seconds>` | How long the link stays valid, default 3600 |
 
-`VAULT_ASK_API_KEY` holds an API key from your Vault account (`/app/account`). With it, requests skip the proof of work, count against the limits of your plan and show up in your dashboard. There is no command line flag for the key, so it never lands in the process list or the shell history.
+`VAULT_ASK_API_KEY` holds an API key from your Vault account (`/account`). With it, requests skip the proof of work, count against the limits of your plan and show up in your dashboard. There is no command line flag for the key, so it never lands in the process list or the shell history.
 
 The exit code is the exit code of the command, `1` for a failed request and `2` for invalid arguments.
 
