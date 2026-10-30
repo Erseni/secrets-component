@@ -64,4 +64,20 @@ class SecretsProofOfWorkReplayStore implements ProofOfWorkReplayStore
             return false;
         }
     }
+
+    public function deleteExpiredBatch(string $nowUtc, int $limit): int
+    {
+        $connection = $this->powChallengeUseConnector->getEntityManager()->getConnection();
+        $batch = $connection->createQueryBuilder()
+            ->select('id')
+            ->from(self::TABLE)
+            ->where('expires_at < :now')
+            ->setMaxResults($limit);
+
+        return (int) $connection->createQueryBuilder()
+            ->delete(self::TABLE)
+            ->where('id IN (' . $batch->getSQL() . ')')
+            ->setParameter('now', $nowUtc)
+            ->executeStatement();
+    }
 }

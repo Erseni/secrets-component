@@ -19,11 +19,10 @@ use esn\components\secrets\entities\SecretStat;
 use esn\components\secrets\entities\SecretStatus;
 use esn\components\secrets\SecretLogger;
 use esn\components\sse\service\SseService;
-use esn\core\cache\Cache;
-use esn\core\database\CacheConnector;
 use esn\core\database\PostgresConnector;
 use esn\core\database\PostgresDml;
 use esn\core\Functions;
+use esn\core\helper\DateTimeHelper;
 use InvalidArgumentException;
 use rg\injektor\attributes\Inject;
 use rg\injektor\attributes\Param;
@@ -81,8 +80,6 @@ class SecretService
 
     public const int STATUS_CLEANUP_GRACE_SECONDS = 86400;
 
-    public const string STATUS_METRICS_CACHE_KEY = 'statusMetrics';
-
     public const string STATUS_WAITING = 'waiting';
 
     public const string STATUS_FULFILLED = 'fulfilled';
@@ -127,8 +124,8 @@ class SecretService
     #[Inject]
     protected SecretLogger $secretLogger;
 
-    #[Inject(overwriteParams: [new Param('name', 'secretStats')])]
-    protected CacheConnector $statsCacheConnector;
+    #[Inject]
+    protected SecretsProofOfWorkReplayStore $proofOfWorkReplayStore;
 
     public function createSecret(
         string $ciphertext,
@@ -177,7 +174,7 @@ class SecretService
     {
         $connection = $this->secretConnector->getEntityManager()->getConnection();
 
-        $row = SecretDeleteReturning::execute($connection, $token, $this->nowUtcParameter());
+        $row = SecretDeleteReturning::execute($connection, $token, DateTimeHelper::nowUtcDatabaseString());
 
         if ($row === false) {
             Functions::logInfo('secrets.retrieve.miss', ['reason' => 'token_miss_or_expired']);
@@ -220,7 +217,7 @@ class SecretService
             ->andWhere('secretRequest.token = :token')
             ->andWhere('secretRequest.expiresAt > :now')
             ->setParameter('token', $token)
-            ->setParameter('now', new DateTime('now', new DateTimeZone('UTC')))
+            ->setParameter('now', DateTimeHelper::nowUtc())
             ->setMaxResults(1);
 
         $results = $this->secretRequestConnector->findByQuery($queryBuilder);
@@ -280,7 +277,7 @@ class SecretService
             ->setParameter('attachmentNonce', $hasAttachment ? $attachmentNonce : null, ParameterType::LARGE_OBJECT)
             ->setParameter('attachmentMeta', $hasAttachment ? $attachmentMeta : null, ParameterType::LARGE_OBJECT)
             ->setParameter('token', $token)
-            ->setParameter('now', $this->nowUtcParameter())
+            ->setParameter('now', DateTimeHelper::nowUtcDatabaseString())
             ->executeStatement();
 
         if ($affectedRows === 0) {
@@ -304,7 +301,7 @@ class SecretService
             ->andWhere('filler_pub IS NOT NULL')
             ->andWhere('expires_at > :now')
             ->setParameter('token', $token)
-            ->setParameter('now', $this->nowUtcParameter());
+            ->setParameter('now', DateTimeHelper::nowUtcDatabaseString());
         $row = PostgresDml::executeReturning(
             $connection,
             $delete,
@@ -364,7 +361,7 @@ class SecretService
     public function cleanupExpired(): CleanupResult
     {
         $connection = $this->secretConnector->getEntityManager()->getConnection();
-        $now = $this->nowUtcParameter();
+        $now = DateTimeHelper::nowUtcDatabaseString();
 
         $expiredSecretTokens = $this->deleteExpiredReturningTokens(
             $connection,
@@ -382,7 +379,10 @@ class SecretService
             ['grace' => self::STATUS_CLEANUP_GRACE_SECONDS, 'now' => $now],
         );
 
-        $powUsedDeleted = $this->deleteExpired($connection, 'secrets.pow_used', ['now' => $now]);
+        $powUsedDeleted = $this->drainCount(
+            'secrets.pow_used',
+            fn(): int => $this->proofOfWorkReplayStore->deleteExpiredBatch($now, self::CLEANUP_BATCH_SIZE),
+        );
 
         $deleted = count($expiredSecretTokens) + $requestsDeleted + count($purgedTokens) + $powUsedDeleted;
 
@@ -588,7 +588,7 @@ class SecretService
         if ($retrievedAt !== null) {
             return self::STATUS_RETRIEVED;
         }
-        if ($expiresAt <= $this->nowUtc()) {
+        if ($expiresAt <= DateTimeHelper::nowUtc()) {
             return self::STATUS_EXPIRED;
         }
         if ($kind === SecretStatus::KIND_REQUEST && $fulfilledAt !== null) {
@@ -628,12 +628,11 @@ class SecretService
                 ->setValue('created_at', ':now')
                 ->setValue('modified_at', ':now')
                 ->setParameter('metric', $metric)
-                ->setParameter('now', $this->nowUtcParameter());
+                ->setParameter('now', DateTimeHelper::nowUtcDatabaseString());
             PostgresDml::upsert($connection, $insert, ['metric'], [
                 'count' => PostgresDml::incrementExisting('secret_stats', 'count'),
                 'modified_at' => PostgresDml::excluded('modified_at'),
             ]);
-            $this->statsCacheConnector->deleteByKey(self::STATUS_METRICS_CACHE_KEY);
         } catch (Throwable $e) {
             $this->secretLogger->logException($e);
         }
@@ -692,7 +691,7 @@ class SecretService
             ->andWhere($column . ' IS NULL')
             ->setParameter('kind', $kind)
             ->setParameter('token', $token)
-            ->setParameter('now', $this->nowUtcParameter());
+            ->setParameter('now', DateTimeHelper::nowUtcDatabaseString());
     }
 
     public function publicChannelExists(string $kind, string $token): bool
@@ -708,7 +707,7 @@ class SecretService
                 ->andWhere('retrieved_at IS NULL')
                 ->setParameter('kind', $kind)
                 ->setParameter('token', $token)
-                ->setParameter('now', $this->nowUtcParameter())
+                ->setParameter('now', DateTimeHelper::nowUtcDatabaseString())
                 ->setMaxResults(1)
                 ->executeQuery()
                 ->fetchOne();
@@ -756,69 +755,9 @@ class SecretService
         return new DateTime((string) $value, new DateTimeZone('UTC'));
     }
 
-    /**
-     * @return array{lifetimeSecrets: int, lifetimeRequests: int}
-     */
-    public function getStatusMetrics(): array
-    {
-        try {
-            return $this->statsCacheConnector->getByKey(
-                self::STATUS_METRICS_CACHE_KEY,
-                fn(): array => $this->fetchStatusMetrics(),
-                Cache::TTL_SHORT,
-            );
-        } catch (Throwable $e) {
-            $this->secretLogger->logException($e);
-
-            return [
-                'lifetimeSecrets' => 0,
-                'lifetimeRequests' => 0,
-            ];
-        }
-    }
-
-    /**
-     * @return array{lifetimeSecrets: int, lifetimeRequests: int}
-     */
-    protected function fetchStatusMetrics(): array
-    {
-        $connection = $this->secretConnector->getEntityManager()->getConnection();
-        $rows = $connection->createQueryBuilder()
-            ->select('metric', 'count')
-            ->from('secrets.secret_stats')
-            ->where('metric IN (:metrics)')
-            ->setParameter('metrics', [SecretStat::METRIC_SECRETS_SENT, SecretStat::METRIC_REQUESTS_CREATED], ArrayParameterType::STRING)
-            ->executeQuery()
-            ->fetchAllAssociative();
-
-        $counts = [];
-        foreach ($rows as $row) {
-            $metric = $row['metric'];
-            if (! is_string($metric)) {
-                continue;
-            }
-            $counts[$metric] = (int) $row['count'];
-        }
-
-        return [
-            'lifetimeSecrets' => $counts[SecretStat::METRIC_SECRETS_SENT] ?? 0,
-            'lifetimeRequests' => $counts[SecretStat::METRIC_REQUESTS_CREATED] ?? 0,
-        ];
-    }
-
     public function generateToken(): string
     {
         return Base64Url::encode(random_bytes(self::TOKEN_RAW_BYTES));
-    }
-
-    private function nowUtc(): DateTime
-    {
-        return new DateTime('now', new DateTimeZone('UTC'));
-    }
-
-    private function nowUtcParameter(): string
-    {
-        return $this->nowUtc()->format('Y-m-d H:i:s');
     }
 
     private function assertNonceLength(string $nonce): void
@@ -864,7 +803,7 @@ class SecretService
 
     private function assertExpiresWithinWindow(DateTime $expiresAt): void
     {
-        $now = $this->nowUtc();
+        $now = DateTimeHelper::nowUtc();
         if ($expiresAt <= $now) {
             throw new InvalidArgumentException('expiresAt must be in the future');
         }
