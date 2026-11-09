@@ -29,6 +29,8 @@ const NAMES_SCHEMA = {
 export const TOOLS = [
     {
         name: 'request_secret',
+        title: 'Request a secret from the user',
+        annotations: { title: 'Request a secret from the user', readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
         description: 'Use this whenever you need a password, token, API key or other secret from the user, for example "I will give you my database password" or "you need my API key for X". '
             + 'Never ask the user to type or paste a secret into the chat. '
             + 'Asks the user for one or more secrets and writes them into a .env file or a file, without the values ever passing through this conversation. '
@@ -47,6 +49,8 @@ export const TOOLS = [
     },
     {
         name: 'run_with_secret',
+        title: 'Run a command with a secret from the user',
+        annotations: { title: 'Run a command with a secret from the user', readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
         description: 'Use this whenever a single command needs a password, token, API key or other secret from the user, for example "connect to the database with my password" or "deploy with my API token". '
             + 'Never ask the user to type or paste a secret into the chat. '
             + 'Asks the user for one or more secrets and runs exactly one command with them as environment variables. '
@@ -66,6 +70,8 @@ export const TOOLS = [
     },
     {
         name: 'send_secret',
+        title: 'Send a secret to the user',
+        annotations: { title: 'Send a secret to the user', readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
         description: 'Use this whenever the user asks you to generate, create or send them a password, token, API key or other secret, for example "generate a password for my database", "generier mir ein Passwort" or "send me the key". '
             + 'Do not generate a secret any other way and never write one into the chat. '
             + 'Generates the value locally (' + DEFAULT_LENGTH + ' letters and digits unless length or charset say otherwise) or takes it from from_file or from_env, encrypts it on this machine and returns only a one-time link that shows the value once in the browser. '

@@ -24,6 +24,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Changed
 
+- `vault-ask` 0.2.2: the MCP tools `request_secret`, `run_with_secret` and `send_secret` carry a `title` and all four tool annotations (`readOnlyHint` false, `destructiveHint` true, `idempotentHint` false, `openWorldHint` true), so MCP clients can warn before a call. All three write files or run a command, overwrite existing `.env` lines or files, and create a new request or value on every call.
 - The live status tracker now renders the `expires_at` timestamp and is also attached on the request retrieve page, so the recipient sees when the request was created, when it expires and whether the secret has been submitted.
 - While the status stream is reconnecting, the tracker now renders a visible "reconnecting" label instead of an empty one; the reconnect window can span several minutes and previously showed nothing at all. Once the status reaches an end state the tracker stops, so the connection label is cleared instead of being left on "reconnecting".
 - The live status tracker no longer falls back to HTTP polling when the SSE stream is unavailable. Both status streams (the per-secret tracker and the dashboard status list) now reconnect with exponential backoff, and report the failure once through the host page's error reporter when they give up. The tracker then shows an offline hint asking for a page reload; the report carries only the flow kind and the failure reason, never the secret token or the channel name.

@@ -118,6 +118,31 @@ test('every tool description starts with when to use it', async () => {
     }
 });
 
+test('every tool has a title and all four annotation hints as booleans', async () => {
+    const list = await server.handle({ jsonrpc: '2.0', id: 2, method: 'tools/list' });
+
+    for (const tool of list.result.tools) {
+        assert.equal(typeof tool.title, 'string', tool.name);
+        assert.ok(tool.title.length > 0, tool.name);
+        assert.equal(tool.annotations.title, tool.title, tool.name);
+        for (const hint of ['readOnlyHint', 'destructiveHint', 'idempotentHint', 'openWorldHint']) {
+            assert.equal(typeof tool.annotations[hint], 'boolean', tool.name + ' ' + hint);
+        }
+    }
+});
+
+test('the annotations match what the handlers do', async () => {
+    const list = await server.handle({ jsonrpc: '2.0', id: 2, method: 'tools/list' });
+
+    for (const tool of list.result.tools) {
+        assert.deepEqual(
+            { readOnlyHint: tool.annotations.readOnlyHint, destructiveHint: tool.annotations.destructiveHint, idempotentHint: tool.annotations.idempotentHint, openWorldHint: tool.annotations.openWorldHint },
+            { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
+            tool.name,
+        );
+    }
+});
+
 function sentLink(text) {
     return text.split('\n').find((line) => line.includes('/view/'));
 }

@@ -1,6 +1,6 @@
 {
     "name": "@erseni/vault-ask",
-    "version": "0.2.1",
+    "version": "0.2.2",
     "mcpName": "com.erseni/vault-ask",
     "description": "Request and send secrets for AI agents through Erseni Vault: end-to-end encrypted, bound to one command, masked in every output, never printed.",
     "license": "AGPL-3.0-or-later",

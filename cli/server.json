@@ -9,12 +9,12 @@
         "source": "github",
         "subfolder": "cli"
     },
-    "version": "0.2.1",
+    "version": "0.2.2",
     "packages": [
         {
             "registryType": "npm",
             "identifier": "@erseni/vault-ask",
-            "version": "0.2.1",
+            "version": "0.2.2",
             "runtimeHint": "npx",
             "transport": {
                 "type": "stdio"
