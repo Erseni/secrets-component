@@ -10,6 +10,7 @@ use rg\injektor\attributes\Inject;
 use rg\injektor\attributes\Service;
 use Throwable;
 use esn\core\helper\StringHelper;
+use RuntimeException;
 
 #[Service]
 class SecretLogger
@@ -28,9 +29,8 @@ class SecretLogger
     public function logException(Throwable $e): void
     {
         $previous = $e->getPrevious();
-        Functions::logError('secrets.exception', [
+        Functions::logException(new RuntimeException('secrets.exception: ' . self::redact($e->getMessage())), context: [
             'class' => $e::class,
-            'message' => self::redact($e->getMessage()),
             'file' => $e->getFile() . ':' . $e->getLine(),
             'trace' => self::redact($e->getTraceAsString()),
             'previousClass' => $previous !== null ? $previous::class : null,
