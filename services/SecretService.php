@@ -62,8 +62,6 @@ class SecretService
 
     public const int POW_WINDOW_SECONDS = 120;
 
-    public const int POW_USED_SKEW_SECONDS = 30;
-
     public const int RATE_LIMIT_READ_PER_MINUTE = 20;
 
     public const int RATE_LIMIT_WINDOW_SECONDS = 60;
@@ -123,9 +121,6 @@ class SecretService
 
     #[Inject]
     protected SecretLogger $secretLogger;
-
-    #[Inject]
-    protected SecretsProofOfWorkReplayStore $proofOfWorkReplayStore;
 
     public function createSecret(
         string $ciphertext,
@@ -379,12 +374,7 @@ class SecretService
             ['grace' => self::STATUS_CLEANUP_GRACE_SECONDS, 'now' => $now],
         );
 
-        $powUsedDeleted = $this->drainCount(
-            'secrets.pow_used',
-            fn(): int => $this->proofOfWorkReplayStore->deleteExpiredBatch($now, self::CLEANUP_BATCH_SIZE),
-        );
-
-        $deleted = count($expiredSecretTokens) + $requestsDeleted + count($purgedTokens) + $powUsedDeleted;
+        $deleted = count($expiredSecretTokens) + $requestsDeleted + count($purgedTokens);
 
         return new CleanupResult($deleted, $purgedTokens, $expiredSecretTokens);
     }
